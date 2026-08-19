@@ -4,7 +4,17 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>HT Live Inventory — connection test</title>
-<script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@2/lib/msal-browser.min.js"></script>
+<script>
+  window.addEventListener("error", function (e) {
+    var el = document.getElementById("status");
+    if (el) {
+      el.textContent =
+        "Page error: " + e.message + "\n(" + (e.filename || "") + ":" + e.lineno + ")";
+      el.className = "err";
+    }
+  });
+</script>
+<script crossorigin="anonymous" src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@2/lib/msal-browser.min.js"></script>
 <style>
   body {
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
@@ -70,13 +80,31 @@
     },
   };
 
-  const msalInstance = new msal.PublicClientApplication(msalConfig);
   const statusEl = document.getElementById("status");
   const signInBtn = document.getElementById("signInBtn");
 
   function setStatus(text, cls) {
     statusEl.textContent = text;
     statusEl.className = cls || "";
+  }
+
+  let msalInstance;
+  try {
+    if (typeof msal === "undefined") {
+      throw new Error(
+        "The sign-in library didn't load (network blocked, or the CDN address is wrong)."
+      );
+    }
+    msalInstance = new msal.PublicClientApplication(msalConfig);
+  } catch (e) {
+    setStatus("Setup error: " + e.message, "err");
+  }
+
+  if (msalInstance) {
+    signInBtn.addEventListener("click", () => {
+      msalInstance.loginRedirect({ scopes: ["Files.Read"] });
+    });
+    init().catch((e) => setStatus("Startup error: " + (e.message || e), "err"));
   }
 
   async function init() {
@@ -90,10 +118,6 @@
       await checkWorkbook(account);
     }
   }
-
-  signInBtn.addEventListener("click", () => {
-    msalInstance.loginRedirect({ scopes: ["Files.Read"] });
-  });
 
   async function checkWorkbook(account) {
     try {
@@ -146,8 +170,6 @@
       setStatus("Error: " + (err.message || err), "err");
     }
   }
-
-  init();
 </script>
 </body>
 </html>
