@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>HT Live Inventory — connection test</title>
+<title>HT Live Inventory</title>
 <script>
   window.addEventListener("error", function (e) {
     var el = document.getElementById("status");
@@ -16,23 +16,18 @@
 </script>
 <script crossorigin="anonymous" src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@2/lib/msal-browser.min.js"></script>
 <style>
+  * { box-sizing: border-box; }
   body {
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-    max-width: 480px;
+    max-width: 520px;
     margin: 0 auto;
-    padding: 24px 16px;
+    padding: 24px 16px 60px;
     background: #faf9f7;
     color: #2a2620;
   }
-  h1 {
-    font-size: 1.3rem;
-    margin-bottom: 4px;
-  }
-  p.sub {
-    color: #6b6558;
-    margin-top: 0;
-    font-size: 0.95rem;
-  }
+  h1 { font-size: 1.3rem; margin-bottom: 4px; }
+  h2 { font-size: 1.02rem; margin: 22px 0 8px; color: #4a4436; }
+  p.sub { color: #6b6558; margin-top: 0; font-size: 0.95rem; }
   button {
     width: 100%;
     padding: 14px;
@@ -41,47 +36,91 @@
     border: none;
     background: #8a5a2c;
     color: white;
-    margin-top: 16px;
+    margin-top: 12px;
+    cursor: pointer;
   }
-  button:disabled {
-    background: #c9bfae;
+  button:disabled { background: #c9bfae; }
+  button.secondary { background: #4a4436; }
+  input[type="text"] {
+    width: 100%;
+    padding: 13px;
+    font-size: 1.05rem;
+    border-radius: 10px;
+    border: 1px solid #d9d2c2;
+    margin-top: 12px;
   }
   #status {
-    margin-top: 20px;
+    margin-top: 16px;
     padding: 14px;
     border-radius: 10px;
     background: #fff;
     border: 1px solid #e5e0d5;
     white-space: pre-wrap;
-    font-size: 0.9rem;
+    font-size: 0.88rem;
     line-height: 1.4;
   }
   .ok { color: #2a6b3a; }
   .err { color: #a8331f; }
-  ul { padding-left: 18px; }
+  .muted { color: #8a8371; font-size: 0.82rem; }
+  #searchArea { display: none; }
+  .card {
+    background: #fff;
+    border: 1px solid #e5e0d5;
+    border-radius: 10px;
+    padding: 12px 14px;
+    margin-top: 10px;
+  }
+  .card .title { font-weight: 600; font-size: 0.98rem; }
+  .card .meta { font-size: 0.85rem; color: #6b6558; margin-top: 4px; line-height: 1.5; }
+  .card a { color: #8a5a2c; }
+  .pill {
+    display: inline-block;
+    font-size: 0.75rem;
+    background: #f1ece0;
+    color: #6b6558;
+    border-radius: 100px;
+    padding: 2px 9px;
+    margin: 2px 4px 0 0;
+  }
+  .spinner-note { font-size: 0.85rem; color: #8a8371; margin-top: 8px; }
 </style>
 </head>
 <body>
   <h1>HT Live Inventory</h1>
-  <p class="sub">Connection test — sign in to confirm live access to the inventory workbook.</p>
+  <p class="sub">Sign in, then search stock, sales history and pricing while you're out buying.</p>
 
   <button id="signInBtn">Sign in with Microsoft</button>
   <div id="status">Not signed in yet.</div>
 
+  <div id="searchArea">
+    <h2>Search</h2>
+    <input type="text" id="searchBox" placeholder="Title or author..." autocomplete="off" />
+    <button id="searchBtn">Search</button>
+
+    <div id="results"></div>
+  </div>
+
 <script>
+  // ---------- Microsoft sign-in / workbook loading (unchanged from the connection test) ----------
   const msalConfig = {
     auth: {
       clientId: "c3a84f45-a39d-43f6-85db-8344a8128ed7",
       authority: "https://login.microsoftonline.com/consumers",
       redirectUri: window.location.origin + window.location.pathname,
     },
-    cache: {
-      cacheLocation: "localStorage",
-    },
+    cache: { cacheLocation: "localStorage" },
   };
+
+  // ---------- Google Custom Search (rarity / pricing check) ----------
+  const GOOGLE_CSE_CX = "e4b78ab779ac24699";
+  const GOOGLE_CSE_KEY = "AIzaSyA0BR5XGCF2RKJ07wd9Oa_xFp7j2abmJuM";
 
   const statusEl = document.getElementById("status");
   const signInBtn = document.getElementById("signInBtn");
+  const searchArea = document.getElementById("searchArea");
+  const searchBox = document.getElementById("searchBox");
+  const searchBtn = document.getElementById("searchBtn");
+  const resultsEl = document.getElementById("results");
 
   function setStatus(text, cls) {
     statusEl.textContent = text;
@@ -91,14 +130,18 @@
   let msalInstance;
   try {
     if (typeof msal === "undefined") {
-      throw new Error(
-        "The sign-in library didn't load (network blocked, or the CDN address is wrong)."
-      );
+      throw new Error("The sign-in library didn't load (network blocked, or the CDN address is wrong).");
     }
     msalInstance = new msal.PublicClientApplication(msalConfig);
   } catch (e) {
     setStatus("Setup error: " + e.message, "err");
   }
+
+  // In-memory data loaded from the workbook (never persisted to disk)
+  let inventoryRows = [];
+  let salesRows = [];
+  let invCols = {};
+  let salesCols = {};
 
   if (msalInstance) {
     signInBtn.addEventListener("click", () => {
@@ -114,18 +157,17 @@
 
     if (account) {
       signInBtn.style.display = "none";
-      setStatus("Signed in as " + account.username + "\nChecking live connection...");
-      await checkWorkbook(account);
+      setStatus("Signed in as " + account.username + "\nFinding the latest workbook...");
+      await loadWorkbook(account);
     }
   }
 
-  async function checkWorkbook(account) {
+  async function loadWorkbook(account) {
     try {
       const tokenResponse = await msalInstance.acquireTokenSilent({
         scopes: ["Files.Read"],
         account: account,
       });
-
       const headers = { Authorization: "Bearer " + tokenResponse.accessToken };
 
       const searchResp = await fetch(
@@ -133,26 +175,21 @@
         { headers }
       );
       const searchData = await searchResp.json();
-      const matches = (searchData.value || []).filter((f) =>
-        f.name.startsWith("HT Inventory Database")
-      );
+      const matches = (searchData.value || []).filter((f) => f.name.startsWith("HT Inventory Database"));
 
       if (matches.length === 0) {
         setStatus("Signed in, but no workbook found matching 'HT Inventory Database'.", "err");
         return;
       }
 
-      // Pick the highest version number from filenames like "... (v77).xlsx"
-      let best = null;
-      let bestVersion = -1;
+      let best = null, bestVersion = -1;
       for (const m of matches) {
         const versionMatch = m.name.match(/\(v(\d+)\)/i);
         const version = versionMatch ? parseInt(versionMatch[1], 10) : -1;
-        if (version > bestVersion) {
-          bestVersion = version;
-          best = m;
-        }
+        if (version > bestVersion) { bestVersion = version; best = m; }
       }
+
+      setStatus("Using " + best.name + "\nLoading Inventory and Sales...");
 
       const wsResp = await fetch(
         `https://graph.microsoft.com/v1.0/me/drive/items/${best.id}/workbook/worksheets?$select=name`,
@@ -161,14 +198,234 @@
       const wsData = await wsResp.json();
       const sheetNames = (wsData.value || []).map((w) => w.name);
 
+      const invName = sheetNames.find((n) => n.trim().toLowerCase() === "inventory");
+      const salesName = sheetNames.find((n) => n.trim().toLowerCase() === "sales");
+
+      if (!invName || !salesName) {
+        setStatus("Couldn't find an 'Inventory' and/or 'Sales' sheet in " + best.name + ".", "err");
+        return;
+      }
+
+      const invValues = await fetchSheetValues(best.id, invName, headers);
+      const salesValues = await fetchSheetValues(best.id, salesName, headers);
+
+      if (invValues.length < 2 || salesValues.length < 2) {
+        setStatus("Inventory or Sales sheet came back empty.", "err");
+        return;
+      }
+
+      invCols = {
+        title: findColumn(invValues[0], ["item name", "title"]),
+        author: findColumn(invValues[0], ["author"]),
+        cost: findColumn(invValues[0], ["cost sgd", "cost (sgd)", "cost"]),
+        status: findColumn(invValues[0], ["status"]),
+        sku: findColumn(invValues[0], ["sku"]),
+      };
+      salesCols = {
+        title: findColumn(salesValues[0], ["item name", "title"]),
+        price: findColumn(salesValues[0], ["sale price", "price"]),
+        date: findColumn(salesValues[0], ["date sold", "date"]),
+        channel: findColumn(salesValues[0], ["channel"]),
+      };
+
+      if (invCols.title === -1 || salesCols.title === -1) {
+        setStatus("Couldn't find a title/item name column in Inventory or Sales — search can't run.", "err");
+        return;
+      }
+
+      inventoryRows = invValues.slice(1);
+      salesRows = salesValues.slice(1);
+
       setStatus(
-        `Live connection confirmed.\n\nLatest workbook: ${best.name}\n(found ${matches.length} versioned copies, picked highest)\n\nWorksheets:\n` +
-          sheetNames.map((n) => "  - " + n).join("\n"),
+        "Live connection confirmed.\n\nWorkbook: " + best.name +
+        "\n(found " + matches.length + " versioned copies, picked highest)\n\n" +
+        "Loaded " + inventoryRows.length + " inventory rows and " + salesRows.length + " sales rows.",
         "ok"
       );
+      searchArea.style.display = "block";
     } catch (err) {
       setStatus("Error: " + (err.message || err), "err");
     }
+  }
+
+  async function fetchSheetValues(workbookId, sheetName, headers) {
+    const resp = await fetch(
+      `https://graph.microsoft.com/v1.0/me/drive/items/${workbookId}/workbook/worksheets('${encodeURIComponent(sheetName)}')/usedRange(valuesOnly=true)`,
+      { headers }
+    );
+    const data = await resp.json();
+    return data.values || [];
+  }
+
+  function findColumn(headerRow, candidates) {
+    const lower = headerRow.map((h) => (h || "").toString().trim().toLowerCase());
+    for (const c of candidates) {
+      const idx = lower.indexOf(c);
+      if (idx !== -1) return idx;
+    }
+    for (const c of candidates) {
+      const idx = lower.findIndex((h) => h.includes(c));
+      if (idx !== -1) return idx;
+    }
+    return -1;
+  }
+
+  // ---------- Search ----------
+  function norm(s) { return (s || "").toString().trim().toLowerCase(); }
+
+  searchBtn.addEventListener("click", runSearch);
+  searchBox.addEventListener("keydown", (e) => { if (e.key === "Enter") runSearch(); });
+
+  function runSearch() {
+    const q = searchBox.value.trim();
+    if (!q) return;
+    const nq = norm(q);
+
+    const invMatches = inventoryRows.filter((r) => {
+      const t = norm(r[invCols.title]);
+      const a = invCols.author > -1 ? norm(r[invCols.author]) : "";
+      return t.includes(nq) || (a && a.includes(nq));
+    });
+    const salesMatches = salesRows.filter((r) => norm(r[salesCols.title]).includes(nq));
+
+    renderResults(q, invMatches, salesMatches);
+  }
+
+  function groupInventory(rows) {
+    const groups = new Map();
+    for (const r of rows) {
+      const title = (r[invCols.title] || "(untitled)").toString();
+      const key = norm(title);
+      if (!groups.has(key)) {
+        groups.set(key, {
+          title,
+          author: invCols.author > -1 ? r[invCols.author] : "",
+          count: 0,
+          costs: [],
+          statuses: {},
+        });
+      }
+      const g = groups.get(key);
+      g.count++;
+      const cost = invCols.cost > -1 ? parseFloat(r[invCols.cost]) : NaN;
+      if (!isNaN(cost)) g.costs.push(cost);
+      const status = invCols.status > -1 ? (r[invCols.status] || "Unknown").toString() : "Unknown";
+      g.statuses[status] = (g.statuses[status] || 0) + 1;
+    }
+    return Array.from(groups.values()).sort((a, b) => b.count - a.count);
+  }
+
+  function groupSales(rows) {
+    const groups = new Map();
+    for (const r of rows) {
+      const title = (r[salesCols.title] || "(untitled)").toString();
+      const key = norm(title);
+      if (!groups.has(key)) groups.set(key, { title, count: 0, prices: [] });
+      const g = groups.get(key);
+      g.count++;
+      const price = salesCols.price > -1 ? parseFloat(r[salesCols.price]) : NaN;
+      if (!isNaN(price)) g.prices.push(price);
+    }
+    return Array.from(groups.values()).sort((a, b) => b.count - a.count);
+  }
+
+  function avg(arr) {
+    if (!arr.length) return null;
+    return arr.reduce((s, n) => s + n, 0) / arr.length;
+  }
+  function money(n) { return n === null ? "—" : "$" + n.toFixed(2); }
+
+  function renderResults(query, invMatches, salesMatches) {
+    const invGroupsFull = groupInventory(invMatches);
+    const salesGroupsFull = groupSales(salesMatches);
+    const invGroups = invGroupsFull.slice(0, 25);
+    const salesGroups = salesGroupsFull.slice(0, 25);
+
+    let html = "";
+
+    html += `<h2>In your inventory (${invMatches.length} ${invMatches.length === 1 ? "copy" : "copies"} across ${invGroupsFull.length} title${invGroupsFull.length === 1 ? "" : "s"})</h2>`;
+    if (invGroups.length === 0) {
+      html += `<p class="muted">No matching stock on record.</p>`;
+    } else {
+      for (const g of invGroups) {
+        const statusPills = Object.entries(g.statuses)
+          .map(([s, n]) => `<span class="pill">${s}: ${n}</span>`)
+          .join("");
+        html += `<div class="card">
+          <div class="title">${escapeHtml(g.title)}</div>
+          <div class="meta">${g.author ? escapeHtml(g.author.toString()) + " · " : ""}${g.count} cop${g.count === 1 ? "y" : "ies"} · avg cost ${money(avg(g.costs))}</div>
+          <div class="meta">${statusPills}</div>
+        </div>`;
+      }
+      if (invGroupsFull.length > 25) html += `<p class="muted">+${invGroupsFull.length - 25} more titles not shown</p>`;
+    }
+
+    html += `<h2>Past sales (${salesMatches.length} sale${salesMatches.length === 1 ? "" : "s"})</h2>`;
+    if (salesGroups.length === 0) {
+      html += `<p class="muted">No past sales on record.</p>`;
+    } else {
+      for (const g of salesGroups) {
+        html += `<div class="card">
+          <div class="title">${escapeHtml(g.title)}</div>
+          <div class="meta">${g.count} sold · avg price ${money(avg(g.prices))}${g.prices.length ? " · range " + money(Math.min(...g.prices)) + "–" + money(Math.max(...g.prices)) : ""}</div>
+        </div>`;
+      }
+      if (salesGroupsFull.length > 25) html += `<p class="muted">+${salesGroupsFull.length - 25} more titles not shown</p>`;
+    }
+
+    html += `<h2>Rarity &amp; current pricing</h2>
+      <div id="rarityArea">
+        <button class="secondary" id="rarityBtn">Check "${escapeHtml(query)}" on bookseller sites</button>
+      </div>`;
+
+    resultsEl.innerHTML = html;
+
+    document.getElementById("rarityBtn").addEventListener("click", () => checkRarity(query));
+  }
+
+  async function checkRarity(query) {
+    const area = document.getElementById("rarityArea");
+    area.innerHTML = `<p class="spinner-note">Searching bookseller sites...</p>`;
+    try {
+      const url = `https://www.googleapis.com/customsearch/v1?key=${GOOGLE_CSE_KEY}&cx=${GOOGLE_CSE_CX}&q=${encodeURIComponent(query)}`;
+      const resp = await fetch(url);
+      const data = await resp.json();
+
+      if (data.error) {
+        area.innerHTML = `<p class="err">Search error: ${escapeHtml(data.error.message || "unknown error")}</p>` + fallbackLink(query);
+        return;
+      }
+
+      const total = data.searchInformation ? data.searchInformation.formattedTotalResults : "0";
+      let html = `<p class="muted">${total} result${total === "1" ? "" : "s"} across curated bookseller sites</p>`;
+
+      if (data.items && data.items.length) {
+        for (const item of data.items.slice(0, 8)) {
+          html += `<div class="card">
+            <div class="title"><a href="${item.link}" target="_blank" rel="noopener">${escapeHtml(item.title)}</a></div>
+            <div class="meta">${escapeHtml(item.displayLink || "")}</div>
+            <div class="meta">${escapeHtml(item.snippet || "")}</div>
+          </div>`;
+        }
+      } else {
+        html += `<p class="muted">No matches on the curated sites.</p>`;
+      }
+
+      html += fallbackLink(query);
+      area.innerHTML = html;
+    } catch (e) {
+      area.innerHTML = `<p class="err">Search failed: ${escapeHtml(e.message || e)}</p>` + fallbackLink(query);
+    }
+  }
+
+  function fallbackLink(query) {
+    return `<p class="meta" style="margin-top:10px;"><a href="https://www.google.com/search?q=${encodeURIComponent(query + " book price")}" target="_blank" rel="noopener">Open an unrestricted Google search instead →</a></p>`;
+  }
+
+  function escapeHtml(s) {
+    return (s || "").toString()
+      .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
   }
 </script>
 </body>
