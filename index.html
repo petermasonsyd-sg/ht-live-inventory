@@ -240,6 +240,7 @@
         title: findColumn(invValues[0], ["product name", "item name", "title"]),
         author: findColumn(invValues[0], ["author"]),
         cost: findColumn(invValues[0], ["cost - sgd", "cost sgd", "cost (sgd)"]),
+        regularPrice: findColumn(invValues[0], ["regular price"]),
         status: findColumn(invValues[0], ["status"]),
         sku: findColumn(invValues[0], ["sku"]),
       };
@@ -528,6 +529,7 @@
           author: invCols.author > -1 ? r[invCols.author] : "",
           count: 0,
           costs: [],
+          listedPrices: [],
           statuses: {},
         });
       }
@@ -537,6 +539,13 @@
       if (!isNaN(cost)) g.costs.push(cost);
       const status = invCols.status > -1 ? (r[invCols.status] || "Unknown").toString() : "Unknown";
       g.statuses[status] = (g.statuses[status] || 0) + 1;
+      // Only count the asking price for copies still actually available to buy —
+      // a Sold/Withdrawn copy's old Regular Price isn't "currently selling for".
+      const stillAvailable = ["in stock", "reserved", "on consignment"].includes(status.toLowerCase());
+      if (stillAvailable && invCols.regularPrice > -1) {
+        const rp = parseFloat(r[invCols.regularPrice]);
+        if (!isNaN(rp)) g.listedPrices.push(rp);
+      }
     }
     return Array.from(groups.values()).sort((a, b) => b.count - a.count);
   }
@@ -577,9 +586,12 @@
         const statusPills = Object.entries(g.statuses)
           .map(([s, n]) => `<span class="pill">${s}: ${n}</span>`)
           .join("");
+        const listedText = g.listedPrices.length
+          ? `selling at ${money(avg(g.listedPrices))}${g.listedPrices.length > 1 && Math.min(...g.listedPrices) !== Math.max(...g.listedPrices) ? ` (${money(Math.min(...g.listedPrices))}–${money(Math.max(...g.listedPrices))})` : ""}`
+          : "not currently listed for sale";
         html += `<div class="card">
           <div class="title">${escapeHtml(g.title)}</div>
-          <div class="meta">${g.author ? escapeHtml(g.author.toString()) + " · " : ""}${g.count} cop${g.count === 1 ? "y" : "ies"} · avg cost ${money(avg(g.costs))}</div>
+          <div class="meta">${g.author ? escapeHtml(g.author.toString()) + " · " : ""}${g.count} cop${g.count === 1 ? "y" : "ies"} · avg cost ${money(avg(g.costs))} · ${listedText}</div>
           <div class="meta">${statusPills}</div>
         </div>`;
       }
