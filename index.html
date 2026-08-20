@@ -352,8 +352,12 @@
     return count;
   }
   function requiredMatchesFor(tokens) {
-    if (tokens.length <= 1) return tokens.length;
-    return Math.max(1, Math.min(4, Math.ceil(tokens.length * 0.25)));
+    // A short, deliberately-typed search (up to 5 words) must match every word —
+    // otherwise a common short fragment like "man" floods results with anything
+    // containing it. Only long, noisy text (an OCR transcript) gets the looser
+    // ~25%-overlap rule, since requiring every word there would almost never match.
+    if (tokens.length <= 5) return tokens.length;
+    return Math.max(4, Math.ceil(tokens.length * 0.25));
   }
 
   searchBtn.addEventListener("click", runSearch);
@@ -400,13 +404,67 @@
     return (cutMatch ? cutMatch[1] : t.slice(0, 120)).trim();
   }
 
+  // Phone photos of old/yellowed pages often have low, uneven contrast, which
+  // hurts OCR badly. Convert to greyscale and stretch contrast to full black/white
+  // range before reading — cheap, and usually helps a lot with faded print.
+  function preprocessForOcr(file) {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      const url = URL.createObjectURL(file);
+      img.onload = () => {
+        try {
+          const maxDim = 2000;
+          let w = img.naturalWidth, h = img.naturalHeight;
+          if (Math.max(w, h) > maxDim) {
+            const scale = maxDim / Math.max(w, h);
+            w = Math.round(w * scale);
+            h = Math.round(h * scale);
+          }
+          const canvas = document.createElement("canvas");
+          canvas.width = w;
+          canvas.height = h;
+          const ctx = canvas.getContext("2d");
+          ctx.drawImage(img, 0, 0, w, h);
+          const imageData = ctx.getImageData(0, 0, w, h);
+          const d = imageData.data;
+          const n = w * h;
+          const gray = new Uint8ClampedArray(n);
+          let min = 255, max = 0;
+          for (let i = 0, p = 0; p < n; i += 4, p++) {
+            const g = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
+            gray[p] = g;
+            if (g < min) min = g;
+            if (g > max) max = g;
+          }
+          const range = Math.max(1, max - min);
+          for (let i = 0, p = 0; p < n; i += 4, p++) {
+            const v = Math.max(0, Math.min(255, ((gray[p] - min) / range) * 255));
+            d[i] = d[i + 1] = d[i + 2] = v;
+          }
+          ctx.putImageData(imageData, 0, 0);
+          URL.revokeObjectURL(url);
+          canvas.toBlob((blob) => resolve(blob || file), "image/png");
+        } catch (e) {
+          URL.revokeObjectURL(url);
+          resolve(file); // fall back to the original photo if processing fails
+        }
+      };
+      img.onerror = () => {
+        URL.revokeObjectURL(url);
+        resolve(file); // fall back to the original photo
+      };
+      img.src = url;
+    });
+  }
+
   async function runOcrAndFill(file) {
     photoBtn.disabled = true;
     photoStatus.textContent = "Reading photo... (first time may take a few seconds to set up)";
     photoStatus.className = "muted";
     try {
       await ensureTesseractLoaded();
-      const result = await Tesseract.recognize(file, "eng");
+      const processed = await preprocessForOcr(file);
+      const result = await Tesseract.recognize(processed, "eng");
       let text = (result && result.data && result.data.text) || "";
       text = text.replace(/\s+/g, " ").trim();
       if (!text) {
@@ -430,9 +488,15 @@
 
   function runSearch() {
     const q = searchBox.value.trim();
-    if (!q) return;
+    if (!q) return; // empty box — nothing to search, leave the screen as-is
     const tokens = tokenize(q);
-    if (!tokens.length) return;
+    // Even if the query is too short/generic to tokenize (e.g. under 3 letters),
+    // still refresh the screen — silently doing nothing here looked like the
+    // app was frozen when really it just had no new results to show.
+    if (!tokens.length) {
+      renderResults(q, [], []);
+      return;
+    }
     const required = requiredMatchesFor(tokens);
 
     const invMatches = inventoryRows.filter((r) => {
