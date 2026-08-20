@@ -353,11 +353,14 @@
     return count;
   }
   function requiredMatchesFor(tokens) {
-    // A short, deliberately-typed search (up to 5 words) must match every word —
-    // otherwise a common short fragment like "man" floods results with anything
-    // containing it. Only long, noisy text (an OCR transcript) gets the looser
-    // ~25%-overlap rule, since requiring every word there would almost never match.
-    if (tokens.length <= 5) return tokens.length;
+    // A short, deliberately-typed search (up to 5 words) must match nearly every
+    // word — otherwise a common short fragment like "man" floods results with
+    // anything containing it — but allow exactly ONE word to be off, since an
+    // OCR-read title (photo search) can have a single misread character even
+    // when the rest reads perfectly, and requiring a 100% match made the whole
+    // search fail on an otherwise-correct read. Long, noisy text (a full OCR
+    // transcript) gets the looser ~25%-overlap rule instead.
+    if (tokens.length <= 5) return Math.max(1, tokens.length - 1);
     return Math.max(4, Math.ceil(tokens.length * 0.25));
   }
 
