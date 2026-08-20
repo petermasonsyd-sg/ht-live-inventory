@@ -429,16 +429,24 @@
           const d = imageData.data;
           const n = w * h;
           const gray = new Uint8ClampedArray(n);
-          let min = 255, max = 0;
+          const hist = new Uint32Array(256);
           for (let i = 0, p = 0; p < n; i += 4, p++) {
             const g = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
             gray[p] = g;
-            if (g < min) min = g;
-            if (g > max) max = g;
+            hist[gray[p]]++;
           }
-          const range = Math.max(1, max - min);
+          // Stretch contrast between the 2nd and 98th percentile of brightness
+          // rather than the true min/max — a true min/max stretch gets thrown off
+          // by a small glare spot or shadow (a handful of outlier pixels), which
+          // can make ordinary text contrast *worse* instead of better.
+          let cum = 0, lowVal = 0, highVal = 255;
+          const lowCut = n * 0.02, highCut = n * 0.02;
+          for (let v = 0; v < 256; v++) { cum += hist[v]; if (cum >= lowCut) { lowVal = v; break; } }
+          cum = 0;
+          for (let v = 255; v >= 0; v--) { cum += hist[v]; if (cum >= highCut) { highVal = v; break; } }
+          const range = Math.max(1, highVal - lowVal);
           for (let i = 0, p = 0; p < n; i += 4, p++) {
-            const v = Math.max(0, Math.min(255, ((gray[p] - min) / range) * 255));
+            const v = Math.max(0, Math.min(255, ((gray[p] - lowVal) / range) * 255));
             d[i] = d[i + 1] = d[i + 2] = v;
           }
           ctx.putImageData(imageData, 0, 0);
