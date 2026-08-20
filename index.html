@@ -96,6 +96,9 @@
     <h2>Search</h2>
     <input type="text" id="searchBox" placeholder="Title or author..." autocomplete="off" />
     <button id="searchBtn">Search</button>
+    <button id="photoBtn" class="secondary">📷 Search by photo</button>
+    <input type="file" id="photoInput" accept="image/*" capture="environment" style="display:none" />
+    <p id="photoStatus" class="muted" style="min-height: 1.2em;"></p>
 
     <div id="results"></div>
   </div>
@@ -117,6 +120,9 @@
   // new projects as of 2026.
   const GOOGLE_CSE_CX = "e4b78ab779ac24699";
   let gcseRarityCounter = 0;
+  let currentRarityGname = null;
+  let gcseLibraryReady = false;
+  let gcseLoadCallbacks = [];
 
   const statusEl = document.getElementById("status");
   const signInBtn = document.getElementById("signInBtn");
@@ -124,6 +130,9 @@
   const searchBox = document.getElementById("searchBox");
   const searchBtn = document.getElementById("searchBtn");
   const resultsEl = document.getElementById("results");
+  const photoBtn = document.getElementById("photoBtn");
+  const photoInput = document.getElementById("photoInput");
+  const photoStatus = document.getElementById("photoStatus");
 
   function setStatus(text, cls) {
     statusEl.textContent = text;
@@ -331,6 +340,63 @@
   searchBtn.addEventListener("click", runSearch);
   searchBox.addEventListener("keydown", (e) => { if (e.key === "Enter") runSearch(); });
 
+  // ---------- Search by photo (on-device OCR — no server, no API key) ----------
+  photoBtn.addEventListener("click", () => photoInput.click());
+  photoInput.addEventListener("change", (e) => {
+    const file = e.target.files && e.target.files[0];
+    photoInput.value = ""; // allow re-selecting the same file next time
+    if (file) runOcrAndFill(file);
+  });
+
+  function ensureTesseractLoaded() {
+    return new Promise((resolve, reject) => {
+      if (window.Tesseract) { resolve(); return; }
+      window.__tesseractCallbacks = window.__tesseractCallbacks || [];
+      window.__tesseractCallbacks.push({ resolve, reject });
+      if (window.__tesseractLoading) return;
+      window.__tesseractLoading = true;
+      const s = document.createElement("script");
+      s.src = "https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js";
+      s.onload = () => {
+        const cbs = window.__tesseractCallbacks || [];
+        window.__tesseractCallbacks = [];
+        cbs.forEach((c) => c.resolve());
+      };
+      s.onerror = () => {
+        const cbs = window.__tesseractCallbacks || [];
+        window.__tesseractCallbacks = [];
+        cbs.forEach((c) => c.reject(new Error("Couldn't load the photo-reading library — check your connection.")));
+      };
+      document.head.appendChild(s);
+    });
+  }
+
+  async function runOcrAndFill(file) {
+    photoBtn.disabled = true;
+    photoStatus.textContent = "Reading photo... (first time may take a few seconds to set up)";
+    photoStatus.className = "muted";
+    try {
+      await ensureTesseractLoaded();
+      const result = await Tesseract.recognize(file, "eng");
+      let text = (result && result.data && result.data.text) || "";
+      text = text.replace(/\s+/g, " ").trim();
+      if (!text) {
+        photoStatus.textContent = "Couldn't read any text from that photo — try a clearer, well-lit shot of the title page.";
+        photoStatus.className = "err";
+        return;
+      }
+      searchBox.value = text.slice(0, 200);
+      searchBox.focus();
+      photoStatus.textContent = "Read from photo — edit if needed (OCR isn't perfect), then tap Search.";
+      photoStatus.className = "ok";
+    } catch (e) {
+      photoStatus.textContent = "Photo reading failed: " + (e.message || e);
+      photoStatus.className = "err";
+    } finally {
+      photoBtn.disabled = false;
+    }
+  }
+
   function runSearch() {
     const q = searchBox.value.trim();
     if (!q) return;
@@ -439,37 +505,92 @@
   }
 
   function ensureGcseLoaded(callback) {
-    if (window.google && window.google.search && window.google.search.cse && window.google.search.cse.element) {
+    if (gcseLibraryReady) {
       callback();
       return;
     }
-    window.__gcseCallbacks = window.__gcseCallbacks || [];
-    window.__gcseCallbacks.push(callback);
-    if (window.__gcseLoading) return;
-    window.__gcseLoading = true;
+    gcseLoadCallbacks.push(callback);
+    if (window.__gcseScriptInjected) return;
+    window.__gcseScriptInjected = true;
+    // Configuring searchCallbacks.web.ready gives us the raw result objects
+    // (title/snippet/link) for each result instead of just an opaque rendered
+    // box — lets us build our own cards AND pull a price out of the listing text.
     window.__gcse = {
       parsetags: "explicit",
       callback: function () {
-        const cbs = window.__gcseCallbacks || [];
-        window.__gcseCallbacks = [];
+        gcseLibraryReady = true;
+        const cbs = gcseLoadCallbacks;
+        gcseLoadCallbacks = [];
         cbs.forEach((cb) => cb());
+      },
+      searchCallbacks: {
+        web: { ready: handleGcseResults },
       },
     };
     const s = document.createElement("script");
     s.src = "https://cse.google.com/cse.js?cx=" + GOOGLE_CSE_CX;
     s.async = true;
     s.onerror = function () {
-      const cbs = window.__gcseCallbacks || [];
-      window.__gcseCallbacks = [];
+      const cbs = gcseLoadCallbacks;
+      gcseLoadCallbacks = [];
       cbs.forEach((cb) => cb("load-failed"));
     };
     document.head.appendChild(s);
+  }
+
+  // Pulls the first plausible currency amount out of a listing snippet, e.g.
+  // "US$ 45.00 Convert Currency..." -> 45.00. Best-effort — snippets don't
+  // always include a price, and currencies aren't normalized.
+  function extractPrice(text) {
+    if (!text) return null;
+    const m = text.match(/(?:US\$|AU\$|A\$|NZ\$|£|€|\$|GBP|USD|AUD)\s?([\d]{1,3}(?:,\d{3})*(?:\.\d{1,2})?)/i);
+    if (!m) return null;
+    const num = parseFloat(m[1].replace(/,/g, ""));
+    return isNaN(num) ? null : num;
+  }
+
+  function handleGcseResults(name, q, promos, results, resultsDiv) {
+    if (name !== currentRarityGname) return false; // not our active query — let default handling happen
+    const spinner = document.getElementById("gcseSpinner");
+    if (spinner) spinner.remove();
+
+    if (!results || !results.length) {
+      resultsDiv.innerHTML = `<p class="muted">No matches on the curated sites.</p>`;
+      return true;
+    }
+
+    const prices = [];
+    let cardsHtml = "";
+    for (const r of results.slice(0, 10)) {
+      const title = r.titleNoFormatting || r.title || "(untitled)";
+      const url = r.unescapedUrl || r.url || r.contextUrl || r.visibleUrl || "#";
+      const snippet = r.contentNoFormatting || r.content || "";
+      const price = extractPrice(snippet);
+      if (price !== null) prices.push(price);
+      cardsHtml += `<div class="card">
+        <div class="title"><a href="${url}" target="_blank" rel="noopener">${escapeHtml(title)}</a></div>
+        <div class="meta">${escapeHtml(snippet)}</div>
+        ${price !== null ? `<div class="meta">Listed at ~${money(price)}</div>` : ""}
+      </div>`;
+    }
+
+    let summaryHtml;
+    if (prices.length) {
+      const lo = Math.min(...prices), hi = Math.max(...prices);
+      summaryHtml = `<p class="muted">Estimated price range from ${prices.length} of ${results.length} listing${results.length === 1 ? "" : "s"}: ${money(lo)}${hi !== lo ? " – " + money(hi) : ""} (currencies not normalized — check each listing)</p>`;
+    } else {
+      summaryHtml = `<p class="muted">${results.length} result${results.length === 1 ? "" : "s"} — no price detected in the listing text</p>`;
+    }
+
+    resultsDiv.innerHTML = summaryHtml + cardsHtml;
+    return true; // suppress Google's default rendering — we've built our own
   }
 
   function checkRarity(query) {
     gcseRarityCounter++;
     const divId = "gcseResultsDiv" + gcseRarityCounter;
     const gname = "rarityResults" + gcseRarityCounter;
+    currentRarityGname = gname;
     const area = document.getElementById("rarityArea");
     area.innerHTML = `<p class="spinner-note" id="gcseSpinner">Loading bookseller search...</p><div id="${divId}"></div>` + fallbackLink(query);
 
@@ -482,8 +603,6 @@
         google.search.cse.element.render({ div: divId, tag: "searchresults-only", gname: gname });
         const el = google.search.cse.element.getElement(gname);
         el.execute(query);
-        const spinner = document.getElementById("gcseSpinner");
-        if (spinner) spinner.remove();
       } catch (e) {
         area.innerHTML = `<p class="err">Bookseller search failed: ${escapeHtml(e.message || e)}</p>` + fallbackLink(query);
       }
