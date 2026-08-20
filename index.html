@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+<<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
@@ -225,14 +225,14 @@
       }
 
       invCols = {
-        title: findColumn(invValues[0], ["item name", "title"]),
+        title: findColumn(invValues[0], ["product name", "item name", "title"]),
         author: findColumn(invValues[0], ["author"]),
-        cost: findColumn(invValues[0], ["cost sgd", "cost (sgd)", "cost"]),
+        cost: findColumn(invValues[0], ["cost - sgd", "cost sgd", "cost (sgd)"]),
         status: findColumn(invValues[0], ["status"]),
         sku: findColumn(invValues[0], ["sku"]),
       };
       salesCols = {
-        title: findColumn(salesValues[0], ["item name", "title"]),
+        title: findColumn(salesValues[0], ["item name", "product name", "title"]),
         price: findColumn(salesValues[0], ["sale price", "price"]),
         date: findColumn(salesValues[0], ["date sold", "date"]),
         channel: findColumn(salesValues[0], ["channel"]),
