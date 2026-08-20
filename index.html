@@ -170,16 +170,26 @@
       });
       const headers = { Authorization: "Bearer " + tokenResponse.accessToken };
 
+      // Graph's /search endpoint is relevance-ranked and NOT guaranteed to return
+      // every matching file — with 60+ versioned copies it can (and did) miss the
+      // actual highest version. Use search only to locate the folder, then list
+      // that folder's full contents directly, which is exhaustive.
       const searchResp = await fetch(
-        "https://graph.microsoft.com/v1.0/me/drive/root/search(q='HT Inventory Database')?$select=name,id",
+        "https://graph.microsoft.com/v1.0/me/drive/root/search(q='HT Inventory Database')?$select=name,id,parentReference",
         { headers }
       );
       const searchData = await searchResp.json();
-      const matches = (searchData.value || []).filter((f) => f.name.startsWith("HT Inventory Database"));
+      let matches = (searchData.value || []).filter((f) => f.name.startsWith("HT Inventory Database"));
 
       if (matches.length === 0) {
         setStatus("Signed in, but no workbook found matching 'HT Inventory Database'.", "err");
         return;
+      }
+
+      const parentId = matches[0].parentReference && matches[0].parentReference.id;
+      if (parentId) {
+        const allInFolder = await listAllVersionsInFolder(parentId, headers);
+        if (allInFolder.length > 0) matches = allInFolder;
       }
 
       let best = null, bestVersion = -1;
@@ -206,8 +216,8 @@
         return;
       }
 
-      const invValues = await fetchSheetValues(best.id, invName, headers);
-      const salesValues = await fetchSheetValues(best.id, salesName, headers);
+      const invValues = await fetchSheetValues(best.id, invName, headers, "A1:AT5010");
+      const salesValues = await fetchSheetValues(best.id, salesName, headers, "A1:BB10010");
 
       if (invValues.length < 2 || salesValues.length < 2) {
         setStatus("Inventory or Sales sheet came back empty.", "err");
@@ -229,7 +239,12 @@
       };
 
       if (invCols.title === -1 || salesCols.title === -1) {
-        setStatus("Couldn't find a title/item name column in Inventory or Sales — search can't run.", "err");
+        setStatus(
+          "Couldn't find a title/item name column — search can't run.\n\n" +
+          "Inventory headers found: " + JSON.stringify(invValues[0]) + "\n\n" +
+          "Sales headers found: " + JSON.stringify(salesValues[0]),
+          "err"
+        );
         return;
       }
 
@@ -248,13 +263,50 @@
     }
   }
 
-  async function fetchSheetValues(workbookId, sheetName, headers) {
-    const resp = await fetch(
-      `https://graph.microsoft.com/v1.0/me/drive/items/${workbookId}/workbook/worksheets('${encodeURIComponent(sheetName)}')/usedRange(valuesOnly=true)`,
-      { headers }
-    );
-    const data = await resp.json();
-    return data.values || [];
+  async function listAllVersionsInFolder(parentId, headers) {
+    let results = [];
+    let url = `https://graph.microsoft.com/v1.0/me/drive/items/${parentId}/children?$select=name,id&$top=200`;
+    while (url) {
+      const resp = await fetch(url, { headers });
+      const data = await resp.json();
+      results = results.concat((data.value || []).filter((f) => f.name && f.name.startsWith("HT Inventory Database")));
+      url = data["@odata.nextLink"] || null;
+    }
+    return results;
+  }
+
+  async function fetchSheetValues(workbookId, sheetName, headers, rangeAddress) {
+    // Use a fixed, bounded range (not usedRange) — usedRange can balloon to
+    // the whole sheet if formatting was ever applied to full columns, which
+    // can make this request take a very long time or hang. $select=values
+    // also trims the response to just the cell values, not formulas/formatting.
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 25000);
+    try {
+      const resp = await fetch(
+        `https://graph.microsoft.com/v1.0/me/drive/items/${workbookId}/workbook/worksheets('${encodeURIComponent(sheetName)}')/range(address='${rangeAddress}')?$select=values`,
+        { headers, signal: controller.signal }
+      );
+      if (!resp.ok) {
+        const errText = await resp.text();
+        throw new Error(`${sheetName} sheet request failed (HTTP ${resp.status}): ${errText.slice(0, 200)}`);
+      }
+      const data = await resp.json();
+      const values = data.values || [];
+      // Trim fully-empty trailing rows so grouping/search doesn't waste time on blanks
+      let lastNonEmpty = -1;
+      for (let i = 0; i < values.length; i++) {
+        if (values[i].some((c) => c !== null && c !== "" && c !== undefined)) lastNonEmpty = i;
+      }
+      return values.slice(0, lastNonEmpty + 1);
+    } catch (e) {
+      if (e.name === "AbortError") {
+        throw new Error(`${sheetName} sheet took too long to load (over 25s) — try again, or check your connection.`);
+      }
+      throw e;
+    } finally {
+      clearTimeout(timeout);
+    }
   }
 
   function findColumn(headerRow, candidates) {
