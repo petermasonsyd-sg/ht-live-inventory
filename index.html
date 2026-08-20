@@ -337,6 +337,25 @@
   // ---------- Search ----------
   function norm(s) { return (s || "").toString().trim().toLowerCase(); }
 
+  // Word-overlap matching rather than whole-string substring matching — a typed
+  // one- or two-word search still needs every word to appear, but a long, noisy
+  // block of text (e.g. an OCR read of a full title page, with subtitle, author
+  // and publisher all glued together) only needs a handful of distinctive words
+  // to overlap with a stock item's title/author.
+  const STOPWORDS = new Set(["the", "and", "of", "a", "an", "in", "on", "for", "from", "with", "by", "to", "or", "at"]);
+  function tokenize(s) {
+    return norm(s).replace(/[^a-z0-9\s]/g, " ").split(/\s+/).filter((w) => w.length >= 3 && !STOPWORDS.has(w));
+  }
+  function countMatches(tokens, haystack) {
+    let count = 0;
+    for (const t of tokens) if (haystack.indexOf(t) !== -1) count++;
+    return count;
+  }
+  function requiredMatchesFor(tokens) {
+    if (tokens.length <= 1) return tokens.length;
+    return Math.max(1, Math.min(4, Math.ceil(tokens.length * 0.25)));
+  }
+
   searchBtn.addEventListener("click", runSearch);
   searchBox.addEventListener("keydown", (e) => { if (e.key === "Enter") runSearch(); });
 
@@ -371,6 +390,16 @@
     });
   }
 
+  // Title pages usually read as "Title. Subtitle: by Author. Publisher, Year."
+  // — cut at the first sentence-ish break so the search box starts with a short,
+  // title-like phrase instead of the whole transcript (which is too specific for
+  // both the inventory match and the bookseller-site search to work well with).
+  function cleanOcrText(raw) {
+    const t = raw.replace(/\s+/g, " ").trim();
+    const cutMatch = t.match(/^(.{8,120}?)[.:]\s/);
+    return (cutMatch ? cutMatch[1] : t.slice(0, 120)).trim();
+  }
+
   async function runOcrAndFill(file) {
     photoBtn.disabled = true;
     photoStatus.textContent = "Reading photo... (first time may take a few seconds to set up)";
@@ -385,9 +414,11 @@
         photoStatus.className = "err";
         return;
       }
-      searchBox.value = text.slice(0, 200);
+      const cleaned = cleanOcrText(text);
+      searchBox.value = cleaned;
       searchBox.focus();
-      photoStatus.textContent = "Read from photo — edit if needed (OCR isn't perfect), then tap Search.";
+      const extra = text.length > cleaned.length ? ` Full text read: "${text.slice(0, 300)}"` : "";
+      photoStatus.textContent = "Read from photo — trimmed to a title-like phrase; edit if needed, then tap Search." + extra;
       photoStatus.className = "ok";
     } catch (e) {
       photoStatus.textContent = "Photo reading failed: " + (e.message || e);
@@ -400,14 +431,16 @@
   function runSearch() {
     const q = searchBox.value.trim();
     if (!q) return;
-    const nq = norm(q);
+    const tokens = tokenize(q);
+    if (!tokens.length) return;
+    const required = requiredMatchesFor(tokens);
 
     const invMatches = inventoryRows.filter((r) => {
       const t = norm(r[invCols.title]);
       const a = invCols.author > -1 ? norm(r[invCols.author]) : "";
-      return t.includes(nq) || (a && a.includes(nq));
+      return countMatches(tokens, t + " " + a) >= required;
     });
-    const salesMatches = salesRows.filter((r) => norm(r[salesCols.title]).includes(nq));
+    const salesMatches = salesRows.filter((r) => countMatches(tokens, norm(r[salesCols.title])) >= required);
 
     renderResults(q, invMatches, salesMatches);
   }
