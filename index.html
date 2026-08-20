@@ -1,4 +1,4 @@
-<<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
@@ -111,9 +111,12 @@
     cache: { cacheLocation: "localStorage" },
   };
 
-  // ---------- Google Custom Search (rarity / pricing check) ----------
+  // ---------- Google Programmable Search (rarity / pricing check) ----------
+  // Uses the embeddable Search Element widget (Google-hosted, no API key/billing
+  // required) rather than the Custom Search JSON API, which Google has closed to
+  // new projects as of 2026.
   const GOOGLE_CSE_CX = "e4b78ab779ac24699";
-  const GOOGLE_CSE_KEY = "AIzaSyA0BR5XGCF2RKJ07wd9Oa_xFp7j2abmJuM";
+  let gcseRarityCounter = 0;
 
   const statusEl = document.getElementById("status");
   const signInBtn = document.getElementById("signInBtn");
@@ -435,39 +438,56 @@
     document.getElementById("rarityBtn").addEventListener("click", () => checkRarity(query));
   }
 
-  async function checkRarity(query) {
-    const area = document.getElementById("rarityArea");
-    area.innerHTML = `<p class="spinner-note">Searching bookseller sites...</p>`;
-    try {
-      const url = `https://www.googleapis.com/customsearch/v1?key=${GOOGLE_CSE_KEY}&cx=${GOOGLE_CSE_CX}&q=${encodeURIComponent(query)}`;
-      const resp = await fetch(url);
-      const data = await resp.json();
+  function ensureGcseLoaded(callback) {
+    if (window.google && window.google.search && window.google.search.cse && window.google.search.cse.element) {
+      callback();
+      return;
+    }
+    window.__gcseCallbacks = window.__gcseCallbacks || [];
+    window.__gcseCallbacks.push(callback);
+    if (window.__gcseLoading) return;
+    window.__gcseLoading = true;
+    window.__gcse = {
+      parsetags: "explicit",
+      callback: function () {
+        const cbs = window.__gcseCallbacks || [];
+        window.__gcseCallbacks = [];
+        cbs.forEach((cb) => cb());
+      },
+    };
+    const s = document.createElement("script");
+    s.src = "https://cse.google.com/cse.js?cx=" + GOOGLE_CSE_CX;
+    s.async = true;
+    s.onerror = function () {
+      const cbs = window.__gcseCallbacks || [];
+      window.__gcseCallbacks = [];
+      cbs.forEach((cb) => cb("load-failed"));
+    };
+    document.head.appendChild(s);
+  }
 
-      if (data.error) {
-        area.innerHTML = `<p class="err">Search error: ${escapeHtml(data.error.message || "unknown error")}</p>` + fallbackLink(query);
+  function checkRarity(query) {
+    gcseRarityCounter++;
+    const divId = "gcseResultsDiv" + gcseRarityCounter;
+    const gname = "rarityResults" + gcseRarityCounter;
+    const area = document.getElementById("rarityArea");
+    area.innerHTML = `<p class="spinner-note" id="gcseSpinner">Loading bookseller search...</p><div id="${divId}"></div>` + fallbackLink(query);
+
+    ensureGcseLoaded(function (err) {
+      if (err) {
+        area.innerHTML = `<p class="err">Bookseller search widget failed to load.</p>` + fallbackLink(query);
         return;
       }
-
-      const total = data.searchInformation ? data.searchInformation.formattedTotalResults : "0";
-      let html = `<p class="muted">${total} result${total === "1" ? "" : "s"} across curated bookseller sites</p>`;
-
-      if (data.items && data.items.length) {
-        for (const item of data.items.slice(0, 8)) {
-          html += `<div class="card">
-            <div class="title"><a href="${item.link}" target="_blank" rel="noopener">${escapeHtml(item.title)}</a></div>
-            <div class="meta">${escapeHtml(item.displayLink || "")}</div>
-            <div class="meta">${escapeHtml(item.snippet || "")}</div>
-          </div>`;
-        }
-      } else {
-        html += `<p class="muted">No matches on the curated sites.</p>`;
+      try {
+        google.search.cse.element.render({ div: divId, tag: "searchresults-only", gname: gname });
+        const el = google.search.cse.element.getElement(gname);
+        el.execute(query);
+        const spinner = document.getElementById("gcseSpinner");
+        if (spinner) spinner.remove();
+      } catch (e) {
+        area.innerHTML = `<p class="err">Bookseller search failed: ${escapeHtml(e.message || e)}</p>` + fallbackLink(query);
       }
-
-      html += fallbackLink(query);
-      area.innerHTML = html;
-    } catch (e) {
-      area.innerHTML = `<p class="err">Search failed: ${escapeHtml(e.message || e)}</p>` + fallbackLink(query);
-    }
+    });
   }
 
   function fallbackLink(query) {
