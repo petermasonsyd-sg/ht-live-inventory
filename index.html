@@ -272,7 +272,20 @@
       );
       searchArea.style.display = "block";
     } catch (err) {
-      setStatus("Error: " + (err.message || err), "err");
+      const code = err && err.errorCode;
+      const msg = (err && err.message) || String(err);
+      const needsSignIn =
+        (err && err.name === "InteractionRequiredAuthError") ||
+        ["interaction_required", "login_required", "consent_required"].includes(code) ||
+        /login_required|interaction_required|consent_required/i.test(msg);
+
+      if (needsSignIn) {
+        signInBtn.style.display = "";
+        searchArea.style.display = "none";
+        setStatus("Your sign-in expired. Tap 'Sign in with Microsoft' above to continue.", "err");
+      } else {
+        setStatus("Error: " + msg, "err");
+      }
     }
   }
 
